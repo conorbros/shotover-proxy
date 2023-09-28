@@ -44,7 +44,7 @@ struct ConfigOpts {
     #[clap(long, default_value = "2097152")]
     pub stack_size: usize,
 
-    #[arg(long, value_enum, default_value = "human")]
+    #[arg(long, value_enum, default_value = "open-telemetry")]
     pub log_format: LogFormat,
 }
 
@@ -52,6 +52,7 @@ struct ConfigOpts {
 enum LogFormat {
     Human,
     Json,
+    OpenTelemetry,
 }
 
 impl Default for ConfigOpts {
@@ -127,9 +128,9 @@ impl Shotover {
         metrics::set_boxed_recorder(Box::new(recorder))?;
 
         let socket: SocketAddr = config.observability_interface.parse()?;
-        let exporter = LogFilterHttpExporter::new(handle, socket, tracing.handle.clone());
+        // let exporter = LogFilterHttpExporter::new(handle, socket, tracing.handle.clone());
 
-        runtime.spawn(exporter.async_run());
+        // runtime.spawn(exporter.async_run());
         Ok(())
     }
 
@@ -194,7 +195,7 @@ impl Shotover {
 struct TracingState {
     /// Once this is dropped tracing logs are ignored
     _guard: WorkerGuard,
-    handle: ReloadHandle,
+    handle: Option<ReloadHandle>,
 }
 
 /// Returns a new `EnvFilter` by parsing each directive string, or an error if any directive is invalid.
@@ -236,7 +237,7 @@ impl TracingState {
                     .with_filter_reloading();
                 let handle = ReloadHandle::Json(builder.reload_handle());
                 builder.init();
-                handle
+                Some(handle)
             }
             LogFormat::Human => {
                 let builder = tracing_subscriber::fmt()
@@ -245,7 +246,19 @@ impl TracingState {
                     .with_filter_reloading();
                 let handle = ReloadHandle::Human(builder.reload_handle());
                 builder.init();
-                handle
+                Some(handle)
+            }
+            LogFormat::OpenTelemetry => {
+                //use opentelemetry::global;
+                use tracing_subscriber::prelude::*;
+
+                let tracer = opentelemetry_jaeger::new_agent_pipeline()
+                    .with_service_name("shotover_proxy")
+                    .with_auto_split_batch(true)
+                    .install_simple()?;
+                let opentelemetry = tracing_opentelemetry::layer().with_tracer(tracer);
+                let builder = tracing_subscriber::registry().with(opentelemetry).init();
+                None
             }
         };
 
